@@ -45,42 +45,13 @@ func TestAccApiManagementApiOperationTag_requiresImport(t *testing.T) {
 	})
 }
 
-func TestAccApiManagementApiOperationTag_update(t *testing.T) {
-	data := acceptance.BuildTestData(t, "azurerm_api_management_api_operation_tag", "test")
-	r := ApiManagementApiOperationTagResource{}
-
-	data.ResourceTest(t, r, []acceptance.TestStep{
-		{
-			Config: r.basic(data),
-			Check: acceptance.ComposeTestCheckFunc(
-				check.That(data.ResourceName).ExistsInAzure(r),
-			),
-		},
-		data.ImportStep(),
-		{
-			Config: r.update(data),
-			Check: acceptance.ComposeTestCheckFunc(
-				check.That(data.ResourceName).ExistsInAzure(r),
-			),
-		},
-		data.ImportStep(),
-		{
-			Config: r.basic(data),
-			Check: acceptance.ComposeTestCheckFunc(
-				check.That(data.ResourceName).ExistsInAzure(r),
-			),
-		},
-		data.ImportStep(),
-	})
-}
-
 func (ApiManagementApiOperationTagResource) Exists(ctx context.Context, clients *clients.Client, state *pluginsdk.InstanceState) (*bool, error) {
-	id, err := parse.OperationTagID(state.ID)
+	id, err := parse.ApiOperationTagID(state.ID)
 	if err != nil {
 		return nil, err
 	}
 
-	resp, err := clients.ApiManagement.TagClient.Get(ctx, id.ResourceGroup, id.ServiceName, id.TagName)
+	resp, err := clients.ApiManagement.TagClient.GetByOperation(ctx, id.ResourceGroup, id.ServiceName, id.ApiName, id.OperationName, id.TagName)
 	if err != nil {
 		return nil, fmt.Errorf("reading %q: %+v", id, err)
 	}
@@ -91,36 +62,24 @@ func (ApiManagementApiOperationTagResource) Exists(ctx context.Context, clients 
 func (r ApiManagementApiOperationTagResource) basic(data acceptance.TestData) string {
 	return fmt.Sprintf(`
 %s
+resource "azurerm_api_management_tag" "test" {
+  api_management_id = azurerm_api_management.test.id
+  name              = "acctest-Tag-%d"
+}
 
 resource "azurerm_api_management_api_operation_tag" "test" {
   api_operation_id = azurerm_api_management_api_operation.test.id
-  name             = "acctest-Op-Tag-%d"
-  display_name     = "Display-Op-Tag"
+  name             = "acctest-Tag-%d"
 }
-`, ApiManagementApiOperationResource{}.basic(data), data.RandomInteger)
+`, ApiManagementApiOperationResource{}.basic(data), data.RandomInteger, data.RandomInteger)
 }
 
 func (r ApiManagementApiOperationTagResource) requiresImport(data acceptance.TestData) string {
 	return fmt.Sprintf(`
 %s
-
 resource "azurerm_api_management_api_operation_tag" "import" {
-  api_operation_id = azurerm_api_management_api_operation_tag.test.api_operation_id
+  api_operation_id = azurerm_api_management_api_operation.test.id
   name             = azurerm_api_management_api_operation_tag.test.name
-  display_name     = azurerm_api_management_api_operation_tag.test.display_name
 }
 `, r.basic(data))
-}
-
-func (r ApiManagementApiOperationTagResource) update(data acceptance.TestData) string {
-	return fmt.Sprintf(`
-%s
-
-resource "azurerm_api_management_api_operation_tag" "test" {
-  api_operation_id = azurerm_api_management_api_operation.test.id
-  name             = "acctest-Op-Tag-%d"
-
-  display_name = "Display-Op-Tag Updated"
-}
-`, ApiManagementApiOperationResource{}.basic(data), data.RandomInteger)
 }

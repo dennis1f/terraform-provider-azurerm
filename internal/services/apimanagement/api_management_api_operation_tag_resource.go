@@ -5,22 +5,20 @@ import (
 	"log"
 	"time"
 
-	"github.com/Azure/azure-sdk-for-go/services/apimanagement/mgmt/2021-08-01/apimanagement" // nolint: staticcheck
 	"github.com/hashicorp/terraform-provider-azurerm/helpers/tf"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/clients"
+	"github.com/hashicorp/terraform-provider-azurerm/internal/features"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/services/apimanagement/parse"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/services/apimanagement/validate"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/pluginsdk"
-	"github.com/hashicorp/terraform-provider-azurerm/internal/tf/validation"
 	"github.com/hashicorp/terraform-provider-azurerm/internal/timeouts"
 	"github.com/hashicorp/terraform-provider-azurerm/utils"
 )
 
 func resourceApiManagementApiOperationTag() *pluginsdk.Resource {
-	return &pluginsdk.Resource{
-		Create: resourceApiManagementApiOperationTagCreateUpdate,
+	resource := &pluginsdk.Resource{
+		Create: resourceApiManagementApiOperationTagCreate,
 		Read:   resourceApiManagementApiOperationTagRead,
-		Update: resourceApiManagementApiOperationTagCreateUpdate,
 		Delete: resourceApiManagementApiOperationTagDelete,
 
 		Importer: pluginsdk.ImporterValidatingResourceId(func(id string) error {
@@ -31,7 +29,6 @@ func resourceApiManagementApiOperationTag() *pluginsdk.Resource {
 		Timeouts: &pluginsdk.ResourceTimeout{
 			Create: pluginsdk.DefaultTimeout(30 * time.Minute),
 			Read:   pluginsdk.DefaultTimeout(5 * time.Minute),
-			Update: pluginsdk.DefaultTimeout(30 * time.Minute),
 			Delete: pluginsdk.DefaultTimeout(30 * time.Minute),
 		},
 
@@ -49,55 +46,60 @@ func resourceApiManagementApiOperationTag() *pluginsdk.Resource {
 				ForceNew:     true,
 				ValidateFunc: validate.ApiManagementChildName,
 			},
-
-			"display_name": {
-				Type:         pluginsdk.TypeString,
-				Required:     true,
-				ValidateFunc: validation.StringIsNotEmpty,
-			},
 		},
 	}
+
+	if !features.FourPointOhBeta() {
+		resource.Schema["display_name"] = &pluginsdk.Schema{
+			Type:       pluginsdk.TypeString,
+			Optional:   true,
+			ForceNew:   true, // Required, because we don't have an update.
+			Deprecated: "This property has been deprecated and will be removed in v4.0 of the provider",
+		}
+	}
+
+	return resource
 }
 
-func resourceApiManagementApiOperationTagCreateUpdate(d *pluginsdk.ResourceData, meta interface{}) error {
+func resourceApiManagementApiOperationTagCreate(d *pluginsdk.ResourceData, meta interface{}) error {
 	subscriptionId := meta.(*clients.Client).Account.SubscriptionId
 	client := meta.(*clients.Client).ApiManagement.TagClient
-	ctx, cancel := timeouts.ForCreateUpdate(meta.(*clients.Client).StopContext, d)
+	ctx, cancel := timeouts.ForCreate(meta.(*clients.Client).StopContext, d)
 	defer cancel()
 
 	apiOperationId, err := parse.ApiOperationID(d.Get("api_operation_id").(string))
 	if err != nil {
 		return err
 	}
-	name := d.Get("name").(string)
 
-	id := parse.NewOperationTagID(subscriptionId, apiOperationId.ResourceGroup, apiOperationId.ServiceName, apiOperationId.ApiName, apiOperationId.OperationName, name)
+	tagName := d.Get("name").(string)
+	tagId := parse.NewTagID(subscriptionId, apiOperationId.ResourceGroup, apiOperationId.ServiceName, tagName)
+	if err != nil {
+		return err
+	}
 
-	if d.IsNewResource() {
-		existing, err := client.GetByOperation(ctx, apiOperationId.ResourceGroup, apiOperationId.ServiceName, apiOperationId.ApiName, apiOperationId.OperationName, name)
-		if err != nil {
-			if !utils.ResponseWasNotFound(existing.Response) {
-				return fmt.Errorf("checking for presence of existing Tag %q: %s", id, err)
-			}
+	id := parse.NewApiOperationTagID(subscriptionId, apiOperationId.ResourceGroup, apiOperationId.ServiceName, apiOperationId.ApiName, apiOperationId.OperationName, tagId.Name)
+
+	tagExists, err := client.Get(ctx, apiOperationId.ResourceGroup, apiOperationId.ServiceName, tagId.ID())
+	if err != nil {
+		if !utils.ResponseWasNotFound(tagExists.Response) {
+			return fmt.Errorf("checking for presence of Tag %q: %s", id, err)
 		}
+	}
 
-		if !utils.ResponseWasNotFound(existing.Response) {
-			return tf.ImportAsExistsError("azurerm_api_management_api_operation_tag", id.ID())
+	tagAssignmentExist, err := client.GetByOperation(ctx, apiOperationId.ResourceGroup, apiOperationId.ServiceName, apiOperationId.ApiName, apiOperationId.OperationName, tagId.Name)
+	if err != nil {
+		if !utils.ResponseWasNotFound(tagAssignmentExist.Response) {
+			return fmt.Errorf("checking for presence of Tag Assignment %q: %s", id, err)
 		}
 	}
 
-	parameters := apimanagement.TagCreateUpdateParameters{
-		TagContractProperties: &apimanagement.TagContractProperties{
-			DisplayName: utils.String(d.Get("display_name").(string)),
-		},
+	if !utils.ResponseWasNotFound(tagAssignmentExist.Response) {
+		return tf.ImportAsExistsError("azurerm_api_management_api_operation_tag", id.ID())
 	}
 
-	if _, err := client.CreateOrUpdate(ctx, apiOperationId.ResourceGroup, apiOperationId.ServiceName, name, parameters, ""); err != nil {
-		return fmt.Errorf("creating/updating %q: %+v", id, err)
-	}
-
-	if _, err := client.AssignToOperation(ctx, apiOperationId.ResourceGroup, apiOperationId.ServiceName, apiOperationId.ApiName, apiOperationId.OperationName, name); err != nil {
-		return fmt.Errorf("assigning to operation %q: %+v", id, err)
+	if _, err := client.AssignToOperation(ctx, apiOperationId.ResourceGroup, apiOperationId.ServiceName, apiOperationId.ApiName, apiOperationId.OperationName, tagId.Name); err != nil {
+		return fmt.Errorf("assigning to api operation %q: %+v", id, err)
 	}
 
 	d.SetId(id.ID())
@@ -116,7 +118,9 @@ func resourceApiManagementApiOperationTagRead(d *pluginsdk.ResourceData, meta in
 		return err
 	}
 
-	resp, err := client.Get(ctx, id.ResourceGroup, id.ServiceName, id.TagName)
+	apiOperationId := parse.NewApiOperationID(subscriptionId, id.ResourceGroup, id.ServiceName, id.ApiName, id.OperationName)
+
+	resp, err := client.GetByOperation(ctx, id.ResourceGroup, id.ServiceName, id.ApiName, id.OperationName, id.TagName)
 	if err != nil {
 		if utils.ResponseWasNotFound(resp.Response) {
 			log.Printf("[DEBUG] %q was not found - removing from state!", id)
@@ -127,12 +131,8 @@ func resourceApiManagementApiOperationTagRead(d *pluginsdk.ResourceData, meta in
 		return fmt.Errorf("retrieving %q: %+v", id, err)
 	}
 
-	d.Set("api_operation_id", parse.NewApiOperationID(subscriptionId, id.ResourceGroup, id.ServiceName, id.ApiName, id.OperationName).ID())
+	d.Set("api_operation_id", apiOperationId.ID())
 	d.Set("name", id.TagName)
-
-	if props := resp.TagContractProperties; props != nil {
-		d.Set("display_name", props.DisplayName)
-	}
 
 	return nil
 }
@@ -147,8 +147,8 @@ func resourceApiManagementApiOperationTagDelete(d *pluginsdk.ResourceData, meta 
 		return err
 	}
 
-	if _, err = client.Delete(ctx, id.ResourceGroup, id.ServiceName, id.TagName, ""); err != nil {
-		return fmt.Errorf("deleting %q: %+v", id, err)
+	if _, err = client.DetachFromOperation(ctx, id.ResourceGroup, id.ServiceName, id.ApiName, id.OperationName, id.TagName); err != nil {
+		return fmt.Errorf("detaching api operation tag %q: %+v", id, err)
 	}
 
 	return nil
